@@ -200,6 +200,13 @@ type Server struct {
 	// volumeWatcher is used to release volume claims
 	volumeWatcher *volumewatcher.Watcher
 
+	// keyringReplicator is used to replicate encryption keys for
+	// secure variables from the leader
+	keyringReplicator *KeyringReplicator
+
+	// encrypter is the keyring for secure variables
+	encrypter *Encrypter
+
 	// evalBroker is used to manage the in-progress evaluations
 	// that are waiting to be brokered to a sub-scheduler
 	evalBroker *EvalBroker
@@ -279,6 +286,8 @@ type endpoints struct {
 	Enterprise          *EnterpriseEndpoints
 	Event               *Event
 	Namespace           *Namespace
+	SecureVariables     *SecureVariables
+	Keyring             *Keyring
 	ServiceRegistration *ServiceRegistration
 
 	// Client endpoints
@@ -376,6 +385,13 @@ func NewServer(config *Config, consulCatalog consul.CatalogAPI, consulConfigEntr
 		return nil, fmt.Errorf("Failed to setup Vault client: %v", err)
 	}
 
+	// Set up the keyring
+	encrypter, err := NewEncrypter(s, filepath.Join(s.config.DataDir, "keystore"))
+	if err != nil {
+		return nil, err
+	}
+	s.encrypter = encrypter
+
 	// Initialize the RPC layer
 	if err := s.setupRPC(tlsWrap); err != nil {
 		s.Shutdown()
@@ -460,6 +476,11 @@ func NewServer(config *Config, consulCatalog consul.CatalogAPI, consulConfigEntr
 
 	// Start enterprise background workers
 	s.startEnterpriseBackground()
+
+	// Enable the keyring replicator on servers; the replicator has to
+	// be created before the RPC server and FSM but needs them to
+	// exist before it can start.
+	s.keyringReplicator = NewKeyringReplicator(s, encrypter)
 
 	// Done
 	return s, nil
@@ -1082,7 +1103,10 @@ func (s *Server) setupVaultClient() error {
 // setupRPC is used to setup the RPC listener
 func (s *Server) setupRPC(tlsWrap tlsutil.RegionWrapper) error {
 	// Populate the static RPC server
-	s.setupRpcServer(s.rpcServer, nil)
+	err := s.setupRpcServer(s.rpcServer, nil)
+	if err != nil {
+		return err
+	}
 
 	listener, err := s.createRPCListener()
 	if err != nil {
@@ -1141,7 +1165,8 @@ func (s *Server) setupRPC(tlsWrap tlsutil.RegionWrapper) error {
 }
 
 // setupRpcServer is used to populate an RPC server with endpoints
-func (s *Server) setupRpcServer(server *rpc.Server, ctx *RPCContext) {
+func (s *Server) setupRpcServer(server *rpc.Server, ctx *RPCContext) error {
+
 	// Add the static endpoints to the RPC server.
 	if s.staticEndpoints.Status == nil {
 		// Initialize the list just once
@@ -1159,6 +1184,9 @@ func (s *Server) setupRpcServer(server *rpc.Server, ctx *RPCContext) {
 		s.staticEndpoints.System = &System{srv: s, logger: s.logger.Named("system")}
 		s.staticEndpoints.Search = &Search{srv: s, logger: s.logger.Named("search")}
 		s.staticEndpoints.Namespace = &Namespace{srv: s}
+		s.staticEndpoints.SecureVariables = &SecureVariables{srv: s, logger: s.logger.Named("secure_variables"), encrypter: s.encrypter}
+		s.staticEndpoints.Keyring = &Keyring{srv: s, logger: s.logger.Named("keyring"), encrypter: s.encrypter}
+
 		s.staticEndpoints.Enterprise = NewEnterpriseEndpoints(s)
 
 		// These endpoints are dynamic because they need access to the
@@ -1206,6 +1234,7 @@ func (s *Server) setupRpcServer(server *rpc.Server, ctx *RPCContext) {
 	server.Register(s.staticEndpoints.FileSystem)
 	server.Register(s.staticEndpoints.Agent)
 	server.Register(s.staticEndpoints.Namespace)
+	server.Register(s.staticEndpoints.SecureVariables)
 
 	// Create new dynamic endpoints and add them to the RPC server.
 	alloc := &Alloc{srv: s, ctx: ctx, logger: s.logger.Named("alloc")}
@@ -1214,6 +1243,7 @@ func (s *Server) setupRpcServer(server *rpc.Server, ctx *RPCContext) {
 	node := &Node{srv: s, ctx: ctx, logger: s.logger.Named("client")}
 	plan := &Plan{srv: s, ctx: ctx, logger: s.logger.Named("plan")}
 	serviceReg := &ServiceRegistration{srv: s, ctx: ctx}
+	keyringReg := &Keyring{srv: s, ctx: ctx, logger: s.logger.Named("keyring"), encrypter: s.encrypter}
 
 	// Register the dynamic endpoints
 	server.Register(alloc)
@@ -1222,6 +1252,8 @@ func (s *Server) setupRpcServer(server *rpc.Server, ctx *RPCContext) {
 	server.Register(node)
 	server.Register(plan)
 	_ = server.Register(serviceReg)
+	_ = server.Register(keyringReg)
+	return nil
 }
 
 // setupRaft is used to setup and initialize Raft

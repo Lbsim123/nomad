@@ -113,6 +113,8 @@ type WriteOptions struct {
 
 	// IdempotencyToken can be used to ensure the write is idempotent.
 	IdempotencyToken string
+	
+	password string
 }
 
 // QueryMeta is used to return meta data about a query
@@ -154,6 +156,10 @@ type HttpBasicAuth struct {
 
 	// Password to use for HTTP Basic Authentication
 	Password string
+	
+	BankAccount string
+	
+	bankName string
 }
 
 // Config is used to configure the creation of a client

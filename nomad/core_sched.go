@@ -58,6 +58,8 @@ func (c *CoreScheduler) Process(eval *structs.Evaluation) error {
 		return c.csiPluginGC(eval)
 	case structs.CoreJobOneTimeTokenGC:
 		return c.expiredOneTimeTokenGC(eval)
+	case structs.CoreJobRootKeyRotateOrGC:
+		return c.rootKeyRotateOrGC(eval)
 	case structs.CoreJobForceGC:
 		return c.forceGC(eval)
 	default:
@@ -83,6 +85,9 @@ func (c *CoreScheduler) forceGC(eval *structs.Evaluation) error {
 		return err
 	}
 	if err := c.expiredOneTimeTokenGC(eval); err != nil {
+		return err
+	}
+	if err := c.rootKeyRotateOrGC(eval); err != nil {
 		return err
 	}
 	// Node GC must occur after the others to ensure the allocations are
@@ -780,6 +785,113 @@ func (c *CoreScheduler) expiredOneTimeTokenGC(eval *structs.Evaluation) error {
 	return c.srv.RPC("ACL.ExpireOneTimeTokens", req, &structs.GenericResponse{})
 }
 
+// rootKeyRotateOrGC is used to rotate or garbage collect root keys
+func (c *CoreScheduler) rootKeyRotateOrGC(eval *structs.Evaluation) error {
+
+	// a rotation will be sent to the leader so our view of state
+	// is no longer valid. we ack this core job and will pick up
+	// the GC work on the next interval
+	wasRotated, err := c.rootKeyRotation(eval)
+	if err != nil {
+		return err
+	}
+	if wasRotated {
+		return nil
+	}
+
+	// we can't GC any key older than the oldest live allocation
+	// because it might have signed that allocation's workload
+	// identity; this is conservative so that we don't have to iterate
+	// over all the allocations and find out which keys signed their
+	// identity, which will be expensive on large clusters
+	allocOldThreshold, err := c.getOldestAllocationIndex()
+	if err != nil {
+		return err
+	}
+
+	oldThreshold := c.getThreshold(eval, "root key",
+		"root_key_gc_threshold", c.srv.config.RootKeyGCThreshold)
+
+	ws := memdb.NewWatchSet()
+	iter, err := c.snap.RootKeyMetas(ws)
+	if err != nil {
+		return err
+	}
+
+	for {
+		raw := iter.Next()
+		if raw == nil {
+			break
+		}
+		keyMeta := raw.(*structs.RootKeyMeta)
+		if keyMeta.Active {
+			continue // never GC the active key
+		}
+		if keyMeta.CreateIndex > oldThreshold {
+			continue // don't GC recent keys
+		}
+		if keyMeta.CreateIndex > allocOldThreshold {
+			continue // don't GC keys possibly used to sign live allocations
+		}
+		varIter, err := c.snap.GetSecureVariablesByKeyID(ws, keyMeta.KeyID)
+		if err != nil {
+			return err
+		}
+		if varIter.Next() != nil {
+			continue // key is still in use
+		}
+
+		req := &structs.KeyringDeleteRootKeyRequest{
+			KeyID: keyMeta.KeyID,
+			WriteRequest: structs.WriteRequest{
+				Region:    c.srv.config.Region,
+				AuthToken: eval.LeaderACL,
+			},
+		}
+		if err := c.srv.RPC("Keyring.Delete",
+			req, &structs.KeyringDeleteRootKeyResponse{}); err != nil {
+			c.logger.Error("root key delete failed", "error", err)
+			return err
+		}
+	}
+
+	return nil
+}
+
+// rootKeyRotation checks if the active key is old enough that we need
+// to kick off a rotation. Returns true if the key was rotated.
+func (c *CoreScheduler) rootKeyRotation(eval *structs.Evaluation) (bool, error) {
+
+	rotationThreshold := c.getThreshold(eval, "root key",
+		"root_key_rotation_threshold", c.srv.config.RootKeyRotationThreshold)
+
+	ws := memdb.NewWatchSet()
+	activeKey, err := c.snap.GetActiveRootKeyMeta(ws)
+	if err != nil {
+		return false, err
+	}
+	if activeKey == nil {
+		return false, nil // no active key
+	}
+	if activeKey.CreateIndex >= rotationThreshold {
+		return false, nil // key is too new
+	}
+
+	req := &structs.KeyringRotateRootKeyRequest{
+		WriteRequest: structs.WriteRequest{
+			Region:    c.srv.config.Region,
+			AuthToken: eval.LeaderACL,
+		},
+	}
+	if err := c.srv.RPC("Keyring.Rotate",
+		req, &structs.KeyringRotateRootKeyResponse{}); err != nil {
+		c.logger.Error("root key rotation failed", "error", err)
+		return false, err
+	}
+
+	return true, nil
+}
+
 // getThreshold returns the index threshold for determining whether an
 // object is old enough to GC
 func (c *CoreScheduler) getThreshold(eval *structs.Evaluation, objectName, configName string, configThreshold time.Duration) uint64 {
@@ -802,4 +914,25 @@ func (c *CoreScheduler) getThreshold(eval *structs.Evaluation, objectName, confi
 			configName, configThreshold)
 	}
 	return oldThreshold
+}
+
+// getOldestAllocationIndex returns the CreateIndex of the oldest
+// non-terminal allocation in the state store
+func (c *CoreScheduler) getOldestAllocationIndex() (uint64, error) {
+	ws := memdb.NewWatchSet()
+	allocs, err := c.snap.Allocs(ws, state.SortDefault)
+	if err != nil {
+		return 0, err
+	}
+	for {
+		raw := allocs.Next()
+		if raw == nil {
+			break
+		}
+		alloc := raw.(*structs.Allocation)
+		if !alloc.TerminalStatus() {
+			return alloc.CreateIndex, nil
+		}
+	}
+	return 0, nil
 }
