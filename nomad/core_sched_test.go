@@ -2388,7 +2388,7 @@ func TestCoreScheduler_CSIVolumeClaimGC(t *testing.T) {
 	require.NoError(t, err)
 	index, _ = store.LatestIndex()
 	index++
-	err = store.DeleteEval(index, []string{eval.ID}, []string{alloc1.ID})
+	err = store.DeleteEval(index, []string{eval.ID}, []string{alloc1.ID}, false)
 	require.NoError(t, err)
 
 	// Create a core scheduler and attempt the volume claim GC

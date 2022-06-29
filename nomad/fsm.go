@@ -787,7 +787,7 @@ func (n *nomadFSM) applyDeleteEval(buf []byte, index uint64) interface{} {
 		panic(fmt.Errorf("failed to decode request: %v", err))
 	}
 
-	if err := n.state.DeleteEval(index, req.Evals, req.Allocs); err != nil {
+	if err := n.state.DeleteEval(index, req.Evals, req.Allocs, req.UserInitiated); err != nil {
 		n.logger.Error("DeleteEval failed", "error", err)
 		return err
 	}

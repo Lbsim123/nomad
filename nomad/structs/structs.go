@@ -830,6 +830,12 @@ type EvalUpdateRequest struct {
 type EvalReapRequest struct {
 	Evals  []string
 	Allocs []string
+
+	// UserInitiated tracks whether this reap request is the result of an
+	// operator request. If this is true, the FSM needs to ensure the eval
+	// broker is paused as the request can include non-terminal allocations.
+	UserInitiated bool
+
 	WriteRequest
 }
 

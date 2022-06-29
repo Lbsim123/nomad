@@ -483,8 +483,9 @@ func (e *Eval) Delete(
 	// avoids adding new Raft messages types and follows the existing reap
 	// flow.
 	raftReq := structs.EvalReapRequest{
-		Evals:        args.EvalIDs,
-		WriteRequest: args.WriteRequest,
+		Evals:         args.EvalIDs,
+		UserInitiated: true,
+		WriteRequest:  args.WriteRequest,
 	}
 
 	// Update via Raft.

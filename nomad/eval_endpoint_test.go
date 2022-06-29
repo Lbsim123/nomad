@@ -202,7 +202,7 @@ func TestEvalEndpoint_GetEval_Blocking(t *testing.T) {
 
 	// Eval delete triggers watches
 	time.AfterFunc(100*time.Millisecond, func() {
-		err := state.DeleteEval(300, []string{eval2.ID}, []string{})
+		err := state.DeleteEval(300, []string{eval2.ID}, []string{}, false)
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
@@ -758,8 +758,15 @@ func TestEvalEndpoint_Delete(t *testing.T) {
 				codec := rpcClient(t, testServer)
 				testutil.WaitForLeader(t, testServer.RPC)
 
-				// Pause the eval broker.
+				// Pause the eval broker and update the scheduler config.
 				testServer.evalBroker.SetEnabled(false)
+
+				_, schedulerConfig, err := testServer.fsm.State().SchedulerConfig()
+				require.NoError(t, err)
+				require.NotNil(t, schedulerConfig)
+
+				schedulerConfig.PauseEvalBroker = true
+				require.NoError(t, testServer.fsm.State().SchedulerSetConfig(10, schedulerConfig))
 
 				// Create and upsert an evaluation.
 				mockEval := mock.Eval()
@@ -794,13 +801,20 @@ func TestEvalEndpoint_Delete(t *testing.T) {
 				codec := rpcClient(t, testServer)
 				testutil.WaitForLeader(t, testServer.RPC)
 
-				// Pause the eval broker.
+				// Pause the eval broker and update the scheduler config.
 				testServer.evalBroker.SetEnabled(false)
+
+				_, schedulerConfig, err := testServer.fsm.State().SchedulerConfig()
+				require.NoError(t, err)
+				require.NotNil(t, schedulerConfig)
+
+				schedulerConfig.PauseEvalBroker = true
+				require.NoError(t, testServer.fsm.State().SchedulerSetConfig(10, schedulerConfig))
 
 				// Create and upsert an evaluation.
 				mockEval := mock.Eval()
 				require.NoError(t, testServer.fsm.State().UpsertEvals(
-					structs.MsgTypeTestSetup, 10, []*structs.Evaluation{mockEval}))
+					structs.MsgTypeTestSetup, 20, []*structs.Evaluation{mockEval}))
 
 				// Attempt to delete the eval, which should succeed as the eval
 				// broker is disabled, and we are using a management token.
@@ -1333,7 +1347,7 @@ func TestEvalEndpoint_List_Blocking(t *testing.T) {
 
 	// Eval deletion triggers watches
 	time.AfterFunc(100*time.Millisecond, func() {
-		if err := state.DeleteEval(3, []string{eval.ID}, nil); err != nil {
+		if err := state.DeleteEval(3, []string{eval.ID}, nil, false); err != nil {
 			t.Fatalf("err: %v", err)
 		}
 	})
