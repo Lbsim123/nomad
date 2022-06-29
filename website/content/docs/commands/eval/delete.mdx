@@ -19,8 +19,8 @@ nomad eval delete [options] [args]
 ```
 
 It takes an optional argument which is the ID of the evaluation to delete. If
-the evaluation ID is omitted, this command will use the filter options below to
-delete a set of evaluations.
+the evaluation ID is omitted, this command will use the filter flag to identify
+and delete a set of evaluations.
 
 When ACLs are enabled, this command requires a `management` token.
 
@@ -30,23 +30,8 @@ When ACLs are enabled, this command requires a `management` token.
 
 ## Delete Options
 
-- `-scheduler`: Filter by scheduler type (one of `batch`, `service`, `system`,
-  or `sysbatch`). This option may be specified multiple times.
-
-- `-status`: Filter by eval status (one of `blocked`, `pending`, `complete`,
-  "failed", or "canceled"). This option may be specified multiple times.
-
-- `-job`: Filter by an associated job ID. This option may be specified multiple
-  times.
-
-- `-deployment`: Filter by an associated deployment ID. This option may be
-  specified multiple times.
-
-- `-node`: Filter by an associated node ID. This option may be specified multiple
-  times.
-
-- `-filter-operator`: The filter operator to use when multiple filter options are
-  specified. This defaults to `and` but also supports `or`.
+- `-filter`: Specifies an expression used to filter evaluations by for
+  deletion.
 
 - `-yes`: Bypass the confirmation prompt if an evaluation ID was not provided.
 
@@ -61,7 +46,7 @@ Successfuly deleted 1 evaluation
 
 Delete all evaluations with status `pending` for the `example` job:
 ```shell-session
-$ nomad eval delete -status=pending -job=example
+$ nomad eval delete -filter='Stauts == "pending" and JobID == "example"'
 Do you want to list evals (3) before deletion? [y/N] y
 
 ID        Priority  Triggered By  Job ID   Status   Placement Failures
@@ -77,6 +62,6 @@ Successfuly deleted 3 evaluations
 Delete all evaluations for the `system` and `service` whilst skipping all
 prompts:
 ```shell-session
-$ nomad eval delete -scheduler=service -schduler=system -filter-operator=or -yes
+$ nomad eval delete -filter='Scheduler == "system" or Scheduler == "service"' -yes
 Successfuly deleted 23 evaluations
 ```

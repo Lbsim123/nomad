@@ -43,13 +43,6 @@ func TestEvalDeleteCommand_Run(t *testing.T) {
 				ui.ErrorWriter.Reset()
 				ui.OutputWriter.Reset()
 
-				// Try deleting evals using a filter, which doesn't match any
-				// evals found in Nomad.
-				require.Equal(t, 1, cmd.Run([]string{"-address=" + url, "-scheduler=service"}))
-				require.Contains(t, ui.ErrorWriter.String(), "failed to find any evals that matched filter criteria")
-				ui.ErrorWriter.Reset()
-				ui.OutputWriter.Reset()
-
 				// Ensure the scheduler config broker is un-paused.
 				schedulerConfig, _, err := client.Operator().SchedulerGetConfiguration(nil)
 				require.NoError(t, err)
@@ -77,52 +70,27 @@ func TestEvalDeleteCommand_verifyArgsAndFlags(t *testing.T) {
 	}{
 		{
 			inputEvalDeleteCommand: &EvalDeleteCommand{
-				scheduler:  []string{"batch", "service"},
-				status:     []string{"pending", "complete"},
-				job:        []string{"example", "another"},
-				deployment: []string{"fake-dep-1", "fake-dep-2"},
-				node:       []string{"fake-node-1", "fake-node-2"},
+				filter: `Status == "Pending"`,
 			},
 			inputArgs:     []string{"fa3a8c37-eac3-00c7-3410-5ba3f7318fd8"},
-			expectedError: errors.New("evaluation ID or filter flags required"),
+			expectedError: errors.New("evaluation ID or filter flag required"),
 			name:          "arg and flags",
 		},
 		{
 			inputEvalDeleteCommand: &EvalDeleteCommand{
-				scheduler:  []string{},
-				status:     []string{},
-				job:        []string{},
-				deployment: []string{},
-				node:       []string{},
+				filter: "",
 			},
 			inputArgs:     []string{},
-			expectedError: errors.New("evaluation ID or filter flags required"),
+			expectedError: errors.New("evaluation ID or filter flag required"),
 			name:          "no arg or flags",
 		},
 		{
 			inputEvalDeleteCommand: &EvalDeleteCommand{
-				scheduler:  []string{},
-				status:     []string{},
-				job:        []string{},
-				deployment: []string{},
-				node:       []string{},
+				filter: "",
 			},
 			inputArgs:     []string{"fa3a8c37-eac3-00c7-3410-5ba3f7318fd8", "fa3a8c37-eac3-00c7-3410-5ba3f7318fd9"},
 			expectedError: errors.New("expected 1 argument, got 2"),
 			name:          "multiple args",
-		},
-		{
-			inputEvalDeleteCommand: &EvalDeleteCommand{
-				scheduler:  []string{},
-				status:     []string{},
-				job:        []string{"example"},
-				deployment: []string{},
-				node:       []string{},
-				filterOp:   "everything",
-			},
-			inputArgs:     []string{},
-			expectedError: errors.New(`got filter-operator "everything", supports "and" "or"`),
-			name:          "incorrect filter-operator",
 		},
 	}
 
@@ -130,71 +98,6 @@ func TestEvalDeleteCommand_verifyArgsAndFlags(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			actualError := tc.inputEvalDeleteCommand.verifyArgsAndFlags(tc.inputArgs)
 			require.Equal(t, tc.expectedError, actualError)
-		})
-	}
-}
-
-func TestEvalDeleteCommand_buildFilter(t *testing.T) {
-	ci.Parallel(t)
-
-	testCases := []struct {
-		inputEvalDeleteCommand *EvalDeleteCommand
-		expectedOutput         string
-		name                   string
-	}{
-		{
-			inputEvalDeleteCommand: &EvalDeleteCommand{
-				scheduler:  []string{"batch", "service"},
-				status:     []string{"pending", "complete"},
-				job:        []string{"example", "another"},
-				deployment: []string{"fake-dep-1", "fake-dep-2"},
-				node:       []string{"fake-node-1", "fake-node-2"},
-				filterOp:   " or ",
-			},
-			expectedOutput: `Type == "batch" or Type == "service" or Status == "pending" or Status == "complete" or JobID == "example" or JobID == "another" or DeploymentID == "fake-dep-1" or DeploymentID == "fake-dep-2" or NodeID == "fake-node-1" or NodeID == "fake-node-2"`,
-			name:           "all filter flags with multiple entries",
-		},
-		{
-			inputEvalDeleteCommand: &EvalDeleteCommand{
-				scheduler:  []string{"batch", "service"},
-				status:     []string{},
-				job:        []string{"example", "another"},
-				deployment: []string{},
-				node:       []string{"fake-node-1", "fake-node-2"},
-				filterOp:   " or ",
-			},
-			expectedOutput: `Type == "batch" or Type == "service" or JobID == "example" or JobID == "another" or NodeID == "fake-node-1" or NodeID == "fake-node-2"`,
-			name:           "some filter flags with multiple entries",
-		},
-		{
-			inputEvalDeleteCommand: &EvalDeleteCommand{
-				scheduler:  []string{},
-				status:     []string{},
-				job:        []string{},
-				deployment: []string{},
-				node:       []string{},
-			},
-			expectedOutput: "",
-			name:           "no filters",
-		},
-		{
-			inputEvalDeleteCommand: &EvalDeleteCommand{
-				scheduler:  []string{},
-				status:     []string{"pending"},
-				job:        []string{"example"},
-				deployment: []string{},
-				node:       []string{},
-				filterOp:   " and ",
-			},
-			expectedOutput: `Status == "pending" and JobID == "example"`,
-			name:           "using and filter operation",
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			actualOutput := tc.inputEvalDeleteCommand.buildFilter()
-			require.Equal(t, tc.expectedOutput, actualOutput)
 		})
 	}
 }

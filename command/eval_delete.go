@@ -8,20 +8,14 @@ import (
 
 	"github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/nomad/api/contexts"
-	flaghelper "github.com/hashicorp/nomad/helper/flags"
 	"github.com/posener/complete"
 )
 
 type EvalDeleteCommand struct {
 	Meta
 
-	scheduler  flaghelper.StringFlag
-	status     flaghelper.StringFlag
-	job        flaghelper.StringFlag
-	deployment flaghelper.StringFlag
-	node       flaghelper.StringFlag
-	filterOp   string
-	yes        bool
+	filter string
+	yes    bool
 
 	// originalBrokerPaused indicates whether the broker was in a paused state
 	// before the command was run. This indicates what action, if any, should
@@ -47,7 +41,7 @@ func (e *EvalDeleteCommand) Help() string {
 Usage: nomad eval delete [options] <evaluation>
 
   Delete an evaluation by ID. If the evaluation ID is omitted, this command
-  will use the filter options below to delete a set of evaluations. If ACLs
+  will use the filter flag to identify and delete a set of evaluations. If ACLs
   are enabled, this command requires a management ACL token.
 
   This command should be used cautiously and only in outage situations where
@@ -61,29 +55,10 @@ General Options:
 
 Eval Delete Options:
 
-  -scheduler
-    Filter by scheduler type (one of "batch", "service", "system", or
-    "sysbatch"). This option may be specified multiple times.
-
-  -status
-    Filter by eval status (one of "blocked", "pending", "complete",
-    "failed", or "canceled"). This option may be specified multiple times.
-
-  -job
-    Filter by an associated job ID. This option may be specified
-    multiple times.
-
-  -deployment
-    Filter by an associated deployment ID. This option may be specified
-    multiple times.
-
-  -node
-    Filter by an associated node ID. This option may be specified
-    multiple times.
-
-  -filter-operator
-    The filter operator to use when multiple filter options are specified. This
-    defaults to "and" but also supports "or".
+  -filter
+    Specifies an expression used to filter evaluations by for deletion. When
+    using this flag, it is advisable to ensure the syntax is correct using the
+    eval list command first.
 
   -yes
     Bypass the confirmation prompt if an evaluation ID was not provided.
@@ -93,24 +68,14 @@ Eval Delete Options:
 }
 
 func (e *EvalDeleteCommand) Synopsis() string {
-	return "Delete evaluations by ID or using filters"
+	return "Delete evaluations by ID or using a filter"
 }
 
 func (e *EvalDeleteCommand) AutocompleteFlags() complete.Flags {
 	return mergeAutocompleteFlags(e.Meta.AutocompleteFlags(FlagSetClient),
 		complete.Flags{
-			"-scheduler": complete.PredictSet(
-				api.JobTypeService,
-				api.JobTypeBatch,
-				api.JobTypeSystem,
-				api.JobTypeSysBatch,
-			),
-			"-status":          complete.PredictAnything,
-			"-job":             complete.PredictAnything,
-			"-deployment":      complete.PredictAnything,
-			"-node":            complete.PredictAnything,
-			"-filter-operator": complete.PredictSet("and", "or"),
-			"-yes":             complete.PredictNothing,
+			"-filter": complete.PredictAnything,
+			"-yes":    complete.PredictNothing,
 		})
 }
 
@@ -135,12 +100,7 @@ func (e *EvalDeleteCommand) Run(args []string) int {
 
 	flags := e.Meta.FlagSet(e.Name(), FlagSetClient)
 	flags.Usage = func() { e.Ui.Output(e.Help()) }
-	flags.Var(&e.scheduler, "scheduler", "")
-	flags.Var(&e.status, "status", "")
-	flags.Var(&e.job, "job", "")
-	flags.Var(&e.deployment, "deployment", "")
-	flags.Var(&e.node, "node", "")
-	flags.StringVar(&e.filterOp, "filter-operator", "and", "")
+	flags.StringVar(&e.filter, "filter", "", "")
 	flags.BoolVar(&e.yes, "yes", false, "")
 	if err := flags.Parse(args); err != nil {
 		return 1
@@ -152,11 +112,6 @@ func (e *EvalDeleteCommand) Run(args []string) int {
 		e.Ui.Error(fmt.Sprintf("Error validating command args and flags: %v", err))
 		return 1
 	}
-
-	// Pad the filter operator with whitespace, so it can be used as is when
-	// building the filter. This transforms "and" to " and ".
-	originalOP := e.filterOp
-	e.filterOp = " " + originalOP + " "
 
 	// Get the HTTP client and store this for use across multiple functions.
 	client, err := e.Meta.Client()
@@ -184,7 +139,7 @@ func (e *EvalDeleteCommand) Run(args []string) int {
 		e.deleteByArg = true
 		exitCode, err = e.handleEvalArgDelete(args[0])
 	default:
-		exitCode, err = e.handleFlagFilterDelete("", e.buildFilter())
+		exitCode, err = e.handleFlagFilterDelete("", e.filter)
 	}
 
 	// Do not exit if we got an error as it's possible this was on the
@@ -220,23 +175,15 @@ func (e *EvalDeleteCommand) Run(args []string) int {
 func (e *EvalDeleteCommand) verifyArgsAndFlags(args []string) error {
 
 	numArgs := len(args)
-	numFlags := len(e.scheduler) + len(e.status) + len(e.job) + len(e.deployment) + len(e.node)
 
-	// The command takes either an argument or flags, but not both.
-	if (numFlags < 1 && numArgs < 1) || (numFlags > 0 && numArgs > 0) {
-		return errors.New("evaluation ID or filter flags required")
+	// The command takes either an argument or filter, but not both.
+	if (e.filter == "" && numArgs < 1) || (e.filter != "" && numArgs > 0) {
+		return errors.New("evaluation ID or filter flag required")
 	}
 
 	// If an argument is supplied, we only accept a single eval ID.
 	if numArgs > 1 {
 		return fmt.Errorf("expected 1 argument, got %v", numArgs)
-	}
-
-	// Ensure the filter operator matches supported and expected values.
-	switch e.filterOp {
-	case "and", "or":
-	default:
-		return fmt.Errorf(`got filter-operator %q, supports "and" "or"`, e.filterOp)
 	}
 
 	return nil
@@ -316,7 +263,7 @@ func (e *EvalDeleteCommand) handleEvalArgDelete(evalID string) (int, error) {
 }
 
 // handleFlagFilterDelete handles deletion of evaluations discovered using
-// filter flags. It is unknown how many will match the operator criteria so
+// the filter. It is unknown how many will match the operator criteria so
 // this function batches lookup and delete requests into sensible numbers.
 //
 // The function is recursive and will run until it has found and deleted all
@@ -389,56 +336,6 @@ func (e *EvalDeleteCommand) handleFlagFilterDelete(nextToken, filter string) (in
 		return e.handleFlagFilterDelete(opts.NextToken, filter)
 	}
 	return 0, nil
-}
-
-// buildFilter is used to create an API filter string based on the operator
-// input flags. This function should be called once, and reused when required
-// for some form of efficiency.
-func (e *EvalDeleteCommand) buildFilter() string {
-
-	var filters []string
-
-	if len(e.scheduler) > 0 {
-		filters = append(filters, joinStringFilter(e.scheduler, "Type ==", e.filterOp))
-	}
-	if len(e.status) > 0 {
-		filters = append(filters, joinStringFilter(e.status, "Status ==", e.filterOp))
-	}
-	if len(e.job) > 0 {
-		filters = append(filters, joinStringFilter(e.job, "JobID ==", e.filterOp))
-	}
-	if len(e.deployment) > 0 {
-		filters = append(filters, joinStringFilter(e.deployment, "DeploymentID ==", e.filterOp))
-	}
-	if len(e.node) > 0 {
-		filters = append(filters, joinStringFilter(e.node, "NodeID ==", e.filterOp))
-	}
-
-	return strings.Join(filters, e.filterOp)
-}
-
-// joinStringFilter is a modified version of the strings.Join function which is
-// specific to joining the input flags together to create a single go-bexpr
-// filter. It does not handle empty inputs and should be performed by the
-// caller.
-func joinStringFilter(elems []string, selector, sep string) string {
-	switch len(elems) {
-	case 1:
-		return fmt.Sprintf("%s %q", selector, elems[0])
-	}
-	n := len(sep) * (len(elems) - 1)
-	for i := 0; i < len(elems); i++ {
-		n += len(elems[i])
-	}
-
-	var b strings.Builder
-	b.Grow(n)
-	b.WriteString(fmt.Sprintf("%s %q", selector, elems[0]))
-	for _, s := range elems[1:] {
-		b.WriteString(sep)
-		b.WriteString(fmt.Sprintf("%s %q", selector, s))
-	}
-	return b.String()
 }
 
 // batchDelete is responsible for deleting the passed evaluations and asking
